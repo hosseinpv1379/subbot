@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import requests
+from requests.exceptions import SSLError
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class PanelConfig:
     username: str
     password: str
     sub_base: str
+    verify_ssl: Optional[bool] = None  # None = از تنظیم سراسری .env
 
 
 @dataclass
@@ -106,10 +108,29 @@ def parse_sub_link(text: str) -> Tuple[str, str]:
     return sub_base, sub_id
 
 
+def _wrap_request_error(exc: Exception, *, verify_ssl: bool) -> RuntimeError:
+    """پیام خطای قابل‌فهم برای کاربر (به‌ویژه SSL)."""
+    msg = str(exc)
+    if isinstance(exc, SSLError) or "CERTIFICATE_VERIFY_FAILED" in msg:
+        hint = (
+            "گواهی SSL پنل معتبر نیست (منقضی یا خودامضا).\n"
+            "در .env بنویسید: VERIFY_SSL=false\n"
+            "یا در panels.json برای این پنل: \"verify_ssl\": false"
+        )
+        if verify_ssl:
+            return RuntimeError(hint)
+        return RuntimeError(f"{hint}\n(جزئیات: {msg[:200]})")
+    return RuntimeError(f"خطای شبکه: {msg}")
+
+
 class XuiPanel:
     def __init__(self, panel: PanelConfig, *, verify_ssl: bool = False, timeout: int = 15):
         self.panel = panel
-        self.verify_ssl = verify_ssl
+        # اولویت: verify_ssl هر پنل در json، وگرنه مقدار سراسری
+        if panel.verify_ssl is not None:
+            self.verify_ssl = bool(panel.verify_ssl)
+        else:
+            self.verify_ssl = verify_ssl
         self.timeout = timeout
         self._session: Optional[requests.Session] = None
         self._session_exp: float = 0.0
@@ -120,6 +141,7 @@ class XuiPanel:
 
     def _new_session(self) -> requests.Session:
         s = requests.Session()
+        s.verify = self.verify_ssl
         s.headers.update(_DEFAULT_HEADERS)
         return s
 
@@ -166,7 +188,7 @@ class XuiPanel:
                     verify=self.verify_ssl,
                 )
             except requests.RequestException as exc:
-                raise RuntimeError(f"خطای شبکه در ورود به پنل: {exc}") from exc
+                raise _wrap_request_error(exc, verify_ssl=self.verify_ssl) from exc
             if r.status_code == 404:
                 continue
             if r.status_code == 403:
@@ -204,7 +226,7 @@ class XuiPanel:
                 verify=self.verify_ssl,
             )
         except requests.RequestException as exc:
-            raise RuntimeError(f"خطای شبکه: {exc}") from exc
+            raise _wrap_request_error(exc, verify_ssl=self.verify_ssl) from exc
 
         if r.status_code in (401, 403) and retry:
             self._invalidate()
@@ -344,12 +366,17 @@ def load_panels(path: str) -> Dict[str, PanelConfig]:
         password = str(cfg.get("password") or "").strip()
         if not api_url or not username or not password:
             raise ValueError(f"پنل «{key}»: api_url، username و password الزامی است.")
+        verify_ssl: Optional[bool] = None
+        if "verify_ssl" in cfg:
+            verify_ssl = bool(cfg["verify_ssl"])
+
         panels[normalize_sub_base(key)] = PanelConfig(
             name=str(cfg.get("name") or key),
             api_url=api_url,
             username=username,
             password=password,
             sub_base=key.rstrip("/"),
+            verify_ssl=verify_ssl,
         )
     return panels
 

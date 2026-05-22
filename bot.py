@@ -33,7 +33,17 @@ logging.basicConfig(
 log = logging.getLogger("subbot")
 
 PANELS_FILE = os.getenv("PANELS_FILE", "panels.json")
-VERIFY_SSL = os.getenv("VERIFY_SSL", "false").lower() in ("1", "true", "yes")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None or not str(val).strip():
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+# پیش‌فرض false — پنل‌های IP معمولاً گواهی منقضی/خودامضا دارند
+VERIFY_SSL = _env_bool("VERIFY_SSL", default=False)
 
 if not VERIFY_SSL:
     import urllib3
@@ -159,6 +169,7 @@ def main() -> None:
 
     panels = load_panels(PANELS_FILE)
     log.info("Loaded %d panel(s) from %s", len(panels), PANELS_FILE)
+    log.info("VERIFY_SSL=%s (برای پنل IP معمولاً false)", VERIFY_SSL)
 
     app = Application.builder().token(token).build()
     app.bot_data["panels"] = panels

@@ -1,0 +1,375 @@
+"""
+کلاینت ساده برای API پنل 3x-ui.
+مستندات: https://github.com/MHSanaei/3x-ui/wiki/Configuration#api-documentation
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote, urlparse
+
+import requests
+
+log = logging.getLogger(__name__)
+
+_DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "X-Requested-With": "XMLHttpRequest",
+}
+_CSRF_HEADER = "X-CSRF-Token"
+_SESSION_TTL = 55 * 60
+
+
+@dataclass
+class PanelConfig:
+    name: str
+    api_url: str
+    username: str
+    password: str
+    sub_base: str
+
+
+@dataclass
+class SubscriptionInfo:
+    panel_name: str
+    sub_id: str
+    sub_url: str
+    email: str
+    enabled: bool
+    up: int
+    down: int
+    total_limit: int
+    expiry_ms: int
+    pending_days: Optional[int]
+    inbound_id: Optional[int]
+    protocol: Optional[str]
+
+
+def _parse_settings(raw: Any) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def normalize_sub_base(url: str) -> str:
+    """نرمال‌سازی آدرس پایهٔ ساب برای تطبیق با کلید panels.json."""
+    u = str(url or "").strip().rstrip("/")
+    parsed = urlparse(u)
+    if not parsed.scheme or not parsed.netloc:
+        return u.lower()
+    path = parsed.path.rstrip("/") or ""
+    return f"{parsed.scheme}://{parsed.netloc}{path}".lower()
+
+
+def parse_sub_link(text: str) -> Tuple[str, str]:
+    """
+    لینک ساب را پارس می‌کند.
+    مثال: https://206.71.158.69:2096/sub/a09sdzfhq22n0lor
+    خروجی: (sub_base, sub_id)
+    """
+    raw = (text or "").strip()
+    m = re.search(r"(https?://[^\s]+)", raw, re.I)
+    url = (m.group(1) if m else raw).rstrip("/")
+
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise ValueError("لینک اشتراک معتبر نیست.")
+
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        raise ValueError(
+            "مسیر لینک باید شبیه /sub/TOKEN باشد؛ "
+            "مثال: https://host:2096/sub/a09sdzfhq22n0lor"
+        )
+
+    sub_id = parts[-1].strip()
+    if not sub_id:
+        raise ValueError("توکن اشتراک (subId) در لینک پیدا نشد.")
+
+    base_path = "/" + "/".join(parts[:-1])
+    sub_base = f"{parsed.scheme}://{parsed.netloc}{base_path}"
+    return sub_base, sub_id
+
+
+class XuiPanel:
+    def __init__(self, panel: PanelConfig, *, verify_ssl: bool = False, timeout: int = 15):
+        self.panel = panel
+        self.verify_ssl = verify_ssl
+        self.timeout = timeout
+        self._session: Optional[requests.Session] = None
+        self._session_exp: float = 0.0
+
+    @property
+    def _base(self) -> str:
+        return self.panel.api_url.rstrip("/")
+
+    def _new_session(self) -> requests.Session:
+        s = requests.Session()
+        s.headers.update(_DEFAULT_HEADERS)
+        return s
+
+    def _fetch_csrf(self, sess: requests.Session) -> str:
+        for path in ("/csrf-token", "/panel/csrf-token"):
+            try:
+                r = sess.get(
+                    f"{self._base}{path}",
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                )
+            except requests.RequestException:
+                continue
+            if r.status_code == 404:
+                continue
+            if not r.ok:
+                continue
+            try:
+                data = r.json()
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("success"):
+                token = data.get("obj") or ""
+                if isinstance(token, str):
+                    return token
+        return ""
+
+    def _login(self) -> requests.Session:
+        sess = self._new_session()
+        csrf = self._fetch_csrf(sess)
+        if csrf:
+            sess.headers[_CSRF_HEADER] = csrf
+
+        payload = {
+            "username": self.panel.username,
+            "password": self.panel.password,
+        }
+        for path in ("/login", "/panel/login"):
+            try:
+                r = sess.post(
+                    f"{self._base}{path}",
+                    json=payload,
+                    timeout=self.timeout,
+                    verify=self.verify_ssl,
+                )
+            except requests.RequestException as exc:
+                raise RuntimeError(f"خطای شبکه در ورود به پنل: {exc}") from exc
+            if r.status_code == 404:
+                continue
+            if r.status_code == 403:
+                raise RuntimeError("ورود به پنل رد شد (403). نام کاربری/رمز یا CSRF را بررسی کنید.")
+            try:
+                data = r.json()
+            except Exception:
+                data = {}
+            if isinstance(data, dict) and data.get("success"):
+                return sess
+            msg = data.get("msg") if isinstance(data, dict) else r.text[:200]
+            raise RuntimeError(f"ورود به پنل ناموفق: {msg or r.status_code}")
+
+        raise RuntimeError("endpoint ورود پنل پیدا نشد.")
+
+    def _session_get(self) -> requests.Session:
+        if self._session and time.time() < self._session_exp:
+            return self._session
+        self._session = self._login()
+        self._session_exp = time.time() + _SESSION_TTL
+        return self._session
+
+    def _invalidate(self) -> None:
+        self._session = None
+        self._session_exp = 0.0
+
+    def _request(self, method: str, path: str, *, retry: bool = True) -> dict:
+        url = f"{self._base}{path}"
+        sess = self._session_get()
+        try:
+            r = sess.request(
+                method,
+                url,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"خطای شبکه: {exc}") from exc
+
+        if r.status_code in (401, 403) and retry:
+            self._invalidate()
+            return self._request(method, path, retry=False)
+
+        try:
+            data = r.json()
+        except Exception:
+            data = None
+
+        if isinstance(data, dict) and data.get("success") is False:
+            raise RuntimeError(str(data.get("msg") or "درخواست API ناموفق بود"))
+
+        if not r.ok:
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+
+        if not isinstance(data, dict):
+            raise RuntimeError("پاسخ JSON نامعتبر از پنل")
+        return data
+
+    def list_inbounds(self) -> List[dict]:
+        data = self._request("GET", "/panel/api/inbounds/list")
+        return list(data.get("obj") or [])
+
+    def get_inbound(self, inbound_id: int) -> dict:
+        data = self._request("GET", f"/panel/api/inbounds/get/{int(inbound_id)}")
+        return dict(data.get("obj") or {})
+
+    def find_client_by_sub_id(self, sub_id: str) -> Tuple[Optional[dict], Optional[int], Optional[dict]]:
+        target = str(sub_id or "").strip()
+        if not target:
+            return None, None, None
+
+        for ib in self.list_inbounds():
+            try:
+                ibid = int(ib.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ibid <= 0:
+                continue
+            try:
+                full = self.get_inbound(ibid)
+            except Exception as exc:
+                log.debug("get_inbound %s failed: %s", ibid, exc)
+                continue
+            settings = _parse_settings(full.get("settings"))
+            for client in settings.get("clients") or []:
+                if not isinstance(client, dict):
+                    continue
+                if str(client.get("subId") or "").strip() == target:
+                    return full, ibid, client
+        return None, None, None
+
+    def get_client_traffics(
+        self,
+        email: str,
+        *,
+        client_uuid: Optional[str] = None,
+    ) -> Optional[dict]:
+        em = str(email or "").strip()
+
+        def _obj(data: Optional[dict]) -> Optional[dict]:
+            if not isinstance(data, dict):
+                return None
+            o = data.get("obj")
+            return o if isinstance(o, dict) else None
+
+        if em:
+            try:
+                data = self._request(
+                    "GET",
+                    f"/panel/api/inbounds/getClientTraffics/{quote(em, safe='')}",
+                )
+                out = _obj(data)
+                if out:
+                    return out
+            except Exception as exc:
+                log.debug("traffics by email: %s", exc)
+
+        cu = str(client_uuid or "").strip()
+        if cu:
+            try:
+                data = self._request(
+                    "GET",
+                    f"/panel/api/inbounds/getClientTrafficsById/{quote(cu, safe='')}",
+                )
+                return _obj(data)
+            except Exception as exc:
+                log.debug("traffics by id: %s", exc)
+        return None
+
+    def get_subscription_info(self, sub_id: str, sub_url: str) -> SubscriptionInfo:
+        inbound, ibid, client = self.find_client_by_sub_id(sub_id)
+        if not client:
+            raise LookupError("کلاینتی با این لینک اشتراک روی پنل پیدا نشد.")
+
+        email = str(client.get("email") or "").strip()
+        client_uuid = str(client.get("id") or client.get("password") or "").strip()
+        stats = self.get_client_traffics(email, client_uuid=client_uuid) or {}
+
+        up = int(stats.get("up") or 0)
+        down = int(stats.get("down") or 0)
+        total = int(stats.get("total") or client.get("totalGB") or 0)
+        exp_ms = int(stats.get("expiryTime") or client.get("expiryTime") or 0)
+        pending_days: Optional[int] = None
+        if exp_ms < 0:
+            pending_days = int(abs(exp_ms) // (86400 * 1000))
+
+        return SubscriptionInfo(
+            panel_name=self.panel.name,
+            sub_id=sub_id,
+            sub_url=sub_url,
+            email=email,
+            enabled=bool(stats.get("enable", client.get("enable", True))),
+            up=up,
+            down=down,
+            total_limit=total,
+            expiry_ms=exp_ms,
+            pending_days=pending_days,
+            inbound_id=ibid,
+            protocol=str(inbound.get("protocol") or "") if inbound else None,
+        )
+
+
+def load_panels(path: str) -> Dict[str, PanelConfig]:
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError("panels.json باید یک آبجکت JSON باشد.")
+
+    panels: Dict[str, PanelConfig] = {}
+    for key, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            continue
+        api_url = str(cfg.get("api_url") or "").strip()
+        username = str(cfg.get("username") or "").strip()
+        password = str(cfg.get("password") or "").strip()
+        if not api_url or not username or not password:
+            raise ValueError(f"پنل «{key}»: api_url، username و password الزامی است.")
+        panels[normalize_sub_base(key)] = PanelConfig(
+            name=str(cfg.get("name") or key),
+            api_url=api_url,
+            username=username,
+            password=password,
+            sub_base=key.rstrip("/"),
+        )
+    return panels
+
+
+def resolve_panel(panels: Dict[str, PanelConfig], sub_base: str) -> PanelConfig:
+    norm = normalize_sub_base(sub_base)
+    if norm in panels:
+        return panels[norm]
+
+    # تطبیق انعطاف‌پذیر: با/بدون /sub در انتها
+    candidates = []
+    for k, p in panels.items():
+        if norm == k or norm.startswith(k + "/") or k.startswith(norm + "/"):
+            candidates.append(p)
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise LookupError("چند پنل با این آدرس ساب تطبیق داد؛ کلید panels.json را دقیق‌تر کنید.")
+
+    raise LookupError(
+        "پنلی برای این لینک اشتراک در panels.json ثبت نشده است.\n"
+        f"آدرس پایه: {sub_base}"
+    )

@@ -1,0 +1,8 @@
+{
+  "https://206.71.158.69:2096/sub": {
+    "name": "سرور نمونه",
+    "api_url": "https://206.71.158.69:2053",
+    "username": "admin",
+    "password": "YOUR_PANEL_PASSWORD"
+  }
+}

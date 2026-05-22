@@ -1,10 +1,6 @@
 """
-ساخت URI اتصال (vless://, vmess://, trojan://, ss://) از روی داده‌های inbound
-و client که از API پنل 3x-ui گرفته می‌شود.
-
-این ماژول هیچ HTTP call ای نمی‌زند — فقط رشته‌ها را از روی ساختار JSON
-پنل می‌سازد. تمام داده‌ی مورد نیاز از `/panel/api/inbounds/list` یا
-`/panel/api/inbounds/get/{id}` قابل استخراج است.
+Build connection URIs (vless://, vmess://, trojan://, ss://) from 3x-ui inbound/client JSON.
+No HTTP calls — data comes from panel API inbound endpoints.
 """
 
 from __future__ import annotations
@@ -371,7 +367,7 @@ def build_link(
     listen = (inbound.get("listen") or "").strip()
     host = listen if listen and listen not in ("0.0.0.0", "::", "::0") else default_host
     if not host:
-        raise RuntimeError("host عمومی برای ساخت لینک مشخص نیست.")
+        raise RuntimeError("Public host for config link is not set.")
 
     settings = parse_json(inbound.get("settings"))
     stream   = parse_json(inbound.get("streamSettings"))
@@ -397,4 +393,4 @@ def build_link(
     if proto == "shadowsocks":
         return build_ss(host, port, full_client, settings, tag)
 
-    raise RuntimeError(f"پروتکل '{proto}' برای ساخت لینک پشتیبانی نمی‌شود.")
+    raise RuntimeError(f"Protocol '{proto}' is not supported for config links.")

@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """
-ربات تلگرام نمونه — نمایش اطلاعات اشتراک 3x-ui از روی لینک ساب.
-
-کاربر لینک ساب می‌فرستد؛ ربات پنل را از panels.json پیدا می‌کند
-و از API پنل اطلاعات را می‌خواند.
+Sample Telegram bot — subscription info from 3x-ui via subscription link.
 """
 
 from __future__ import annotations
@@ -43,7 +40,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
-# پیش‌فرض false — پنل‌های IP معمولاً گواهی منقضی/خودامضا دارند
 VERIFY_SSL = _env_bool("VERIFY_SSL", default=False)
 
 if not VERIFY_SSL:
@@ -65,46 +61,46 @@ def _fmt_bytes(n: int) -> str:
 
 def _fmt_expiry(expiry_ms: int, pending_days: int | None) -> str:
     if expiry_ms == 0:
-        return "نامحدود"
+        return "Unlimited"
     if expiry_ms < 0:
         d = pending_days if pending_days is not None else int(abs(expiry_ms) // (86400 * 1000))
-        return f"از اولین اتصال — {d} روز"
+        return f"Starts on first use — {d} days"
     dt = datetime.fromtimestamp(expiry_ms / 1000.0, tz=timezone.utc)
     local = dt.astimezone()
     remain = dt - datetime.now(timezone.utc)
     days_left = max(0, remain.days)
-    return f"{local.strftime('%Y-%m-%d %H:%M')} ({days_left} روز مانده)"
+    return f"{local.strftime('%Y-%m-%d %H:%M')} ({days_left} days left)"
 
 
 def format_subscription_message(info) -> str:
-    """فقط اطلاعات اشتراک برای مشتری — بدون نام پنل، توکن، ایمیل داخلی و …"""
+    """Customer-facing subscription summary (no panel internals)."""
     used = info.up + info.down
     limit = info.total_limit
     if limit > 0:
         pct = min(100.0, (used / limit) * 100.0)
         traffic_line = (
-            f"📊 حجم: {_fmt_bytes(used)} / {_fmt_bytes(limit)} ({pct:.1f}%)"
+            f"📊 Data: {_fmt_bytes(used)} / {_fmt_bytes(limit)} ({pct:.1f}%)"
         )
     else:
-        traffic_line = f"📊 مصرف: {_fmt_bytes(used)} (نامحدود)"
+        traffic_line = f"📊 Usage: {_fmt_bytes(used)} (unlimited)"
 
-    status = "✅ فعال" if info.enabled else "❌ غیرفعال"
+    status = "✅ Active" if info.enabled else "❌ Disabled"
     lines = [
-        "📋 <b>اطلاعات اشتراک</b>",
+        "📋 <b>Subscription</b>",
         "",
-        f"⚡ وضعیت: {status}",
+        f"⚡ Status: {status}",
         traffic_line,
-        f"⬆️ آپلود: {_fmt_bytes(info.up)}",
-        f"⬇️ دانلود: {_fmt_bytes(info.down)}",
-        f"📅 انقضا: {_fmt_expiry(info.expiry_ms, info.pending_days)}",
+        f"⬆️ Upload: {_fmt_bytes(info.up)}",
+        f"⬇️ Download: {_fmt_bytes(info.down)}",
+        f"📅 Expiry: {_fmt_expiry(info.expiry_ms, info.pending_days)}",
     ]
 
     if info.sub_url:
-        lines.extend(["", "🔗 <b>لینک ساب</b>", f"<code>{html.escape(info.sub_url)}</code>"])
+        lines.extend(["", "🔗 <b>Subscription URL</b>", f"<code>{html.escape(info.sub_url)}</code>"])
 
     if info.config_links:
         lines.append("")
-        lines.append("📡 <b>لینک‌های اتصال</b>")
+        lines.append("📡 <b>Connection links</b>")
         for i, link in enumerate(info.config_links, 1):
             proto = link.split("://", 1)[0].upper() if "://" in link else "CONFIG"
             if len(info.config_links) > 1:
@@ -115,7 +111,6 @@ def format_subscription_message(info) -> str:
 
 
 def _split_message(text: str, limit: int = 4000) -> list[str]:
-    """اگر پیام از حد تلگرام بلندتر شد، به چند قسمت تقسیم می‌کند."""
     if len(text) <= limit:
         return [text]
     parts: list[str] = []
@@ -135,12 +130,11 @@ def _split_message(text: str, limit: int = 4000) -> list[str]:
 
 
 def user_facing_error(exc: Exception) -> str:
-    """پیام امن برای مشتری — بدون جزئیات پنل، فایل‌ها یا خطای فنی."""
     if isinstance(exc, ValueError):
-        return "لینک ساب معتبر نیست."
+        return "Invalid subscription link."
     if isinstance(exc, LookupError):
-        return "اشتراکی با این لینک پیدا نشد."
-    return "در حال حاضر امکان نمایش اطلاعات نیست. لطفاً بعداً دوباره تلاش کنید."
+        return "No subscription found for this link."
+    return "Unable to load subscription info right now. Please try again later."
 
 
 def get_panel_client(panel_cfg: PanelConfig) -> XuiPanel:
@@ -149,13 +143,13 @@ def get_panel_client(panel_cfg: PanelConfig) -> XuiPanel:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "سلام 👋\n\n"
-        "لینک ساب خودت رو بفرست تا اطلاعات اشتراکت رو ببینی.",
+        "Hi 👋\n\n"
+        "Send your subscription link to view your subscription details.",
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("لینک ساب خودت رو بفرست.")
+    await update.message.reply_text("Send your subscription link.")
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -166,10 +160,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     panels: dict = context.application.bot_data.get("panels") or {}
     if not panels:
         log.error("no panels loaded — cannot serve customer")
-        await update.message.reply_text("❌ در حال حاضر سرویس در دسترس نیست.")
+        await update.message.reply_text("❌ Service is temporarily unavailable.")
         return
 
-    wait = await update.message.reply_text("⏳ در حال بررسی اشتراک…")
+    wait = await update.message.reply_text("⏳ Checking subscription…")
 
     try:
         sub_base, sub_id = parse_sub_link(text)
@@ -192,17 +186,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN در .env تنظیم نشده است.")
+        raise SystemExit("TELEGRAM_BOT_TOKEN is not set in .env")
 
     if not os.path.isfile(PANELS_FILE):
         raise SystemExit(
-            f"فایل {PANELS_FILE} وجود ندارد. "
-            f"از panels.json.example کپی بگیرید: cp panels.json.example panels.json"
+            f"{PANELS_FILE} not found. "
+            f"Copy from example: cp panels.json.example panels.json"
         )
 
     panels = load_panels(PANELS_FILE)
     log.info("Loaded %d panel(s) from %s", len(panels), PANELS_FILE)
-    log.info("VERIFY_SSL=%s (برای پنل IP معمولاً false)", VERIFY_SSL)
+    log.info("VERIFY_SSL=%s", VERIFY_SSL)
 
     app = Application.builder().token(token).build()
     app.bot_data["panels"] = panels

@@ -1,8 +1,8 @@
-# ربات نمونه — اطلاعات اشتراک 3x-ui
+# Subscription info bot (3x-ui)
 
-ربات تلگرام که کاربر **لینک subscription** می‌فرستد و ربات از API پنل [3x-ui](https://github.com/MHSanaei/3x-ui/wiki/Configuration#api-documentation) اطلاعات کلاینت را می‌خواند.
+Telegram bot: user sends a **subscription link**, bot reads client info from the [3x-ui API](https://github.com/MHSanaei/3x-ui/wiki/Configuration#api-documentation).
 
-## راه‌اندازی
+## Setup
 
 ```bash
 cd subbot
@@ -11,40 +11,39 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp panels.json.example panels.json
 cp .env.example .env
-# ویرایش panels.json و .env
+# Edit panels.json and .env
 python bot.py
 ```
 
 ## `panels.json`
 
-کلید هر پنل = **آدرس پایهٔ لینک ساب** (همان چیزی که قبل از توکن می‌آید):
+Each key is the **subscription base URL** (the part before the token):
 
 ```json
 {
-  "https://206.71.158.69:2096/sub": {
-    "name": "سرور ۱",
-    "api_url": "https://206.71.158.69:2053",
+  "https://host:2096/sub": {
+    "name": "Server 1",
+    "api_url": "https://host:2053",
     "username": "admin",
-    "password": "رمز پنل"
+    "password": "panel_password"
   }
 }
 ```
 
-- `api_url`: آدرس وب‌پنل (معمولاً پورت 2053)
-- لینک ساب معمولاً پورت 2096 است (`/sub/TOKEN`)
+- `api_url`: panel web URL (usually port 2053)
+- Subscription links usually use port 2096 (`/sub/TOKEN`)
 
-## نحوه کار
+## Flow
 
-1. کاربر لینکی مثل `https://host:2096/sub/a09sdzfhq22n0lor` می‌فرستد
-2. ربات `sub_base` و `subId` را استخراج می‌کند
-3. پنل متناظر از `panels.json` پیدا می‌شود
-4. لاگین API → جستجوی کلاینت با `subId` در اینباندها → `getClientTraffics`
-5. نمایش حجم، انقضا، وضعیت فعال/غیرفعال
+1. User sends e.g. `https://host:2096/sub/TOKEN`
+2. Bot extracts `subId` and finds the matching panel in `panels.json`
+3. API login → find client by `subId` → `getClientTraffics`
+4. Shows usage, expiry, status, subscription URL, and vless/vmess links
 
-## متغیرهای محیطی
+## Environment
 
-| متغیر | توضیح |
-|--------|--------|
-| `TELEGRAM_BOT_TOKEN` | توکن ربات از [@BotFather](https://t.me/BotFather) |
-| `PANELS_FILE` | مسیر فایل پنل‌ها (پیش‌فرض: `panels.json`) |
-| `VERIFY_SSL` | `true` اگر گواهی SSL معتبر است |
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| `PANELS_FILE` | Path to panels file (default: `panels.json`) |
+| `VERIFY_SSL` | `true` only if the panel has a valid SSL certificate |

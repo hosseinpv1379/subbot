@@ -1,6 +1,6 @@
 """
-کلاینت ساده برای API پنل 3x-ui.
-مستندات: https://github.com/MHSanaei/3x-ui/wiki/Configuration#api-documentation
+Simple 3x-ui panel API client.
+Docs: https://github.com/MHSanaei/3x-ui/wiki/Configuration#api-documentation
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ class PanelConfig:
     username: str
     password: str
     sub_base: str
-    verify_ssl: Optional[bool] = None  # None = از تنظیم سراسری .env
-    config_address: Optional[str] = None  # host عمومی لینک vless/vmess (اختیاری)
+    verify_ssl: Optional[bool] = None  # None = use global .env setting
+    config_address: Optional[str] = None  # public host for vless/vmess links (optional)
     config_port: Optional[int] = None
     flag: str = ""
 
@@ -92,7 +92,7 @@ def fetch_config_links_from_sub(
     verify_ssl: bool,
     timeout: int = 15,
 ) -> List[str]:
-    """لینک‌های vless/vmess/… را از همان URL سابی که کاربر می‌فرستد می‌خواند."""
+    """Fetch vless/vmess/… links from the subscription URL."""
     headers = {
         **_DEFAULT_HEADERS,
         "Accept": "text/plain, application/json, */*",
@@ -115,7 +115,7 @@ def fetch_config_links_from_sub(
 
     candidates: List[str] = []
 
-    # خروجی معمول 3x-ui: base64 شامل چند خط vless:// ...
+    # Typical 3x-ui output: base64 with vless:// lines
     try:
         pad = "=" * (-len(raw) % 4)
         decoded = base64.b64decode(raw + pad).decode("utf-8", errors="replace")
@@ -123,7 +123,7 @@ def fetch_config_links_from_sub(
     except Exception:
         candidates.append(raw)
 
-    # گاهی JSON آرایه‌ای از لینک‌هاست
+    # Sometimes JSON array of links
     if raw.startswith("{") or raw.startswith("["):
         try:
             data = json.loads(raw)
@@ -158,7 +158,7 @@ def _parse_settings(raw: Any) -> dict:
 
 
 def normalize_sub_base(url: str) -> str:
-    """نرمال‌سازی آدرس پایهٔ ساب برای تطبیق با کلید panels.json."""
+    """Normalize subscription base URL for panels.json key matching."""
     u = str(url or "").strip().rstrip("/")
     parsed = urlparse(u)
     if not parsed.scheme or not parsed.netloc:
@@ -168,11 +168,7 @@ def normalize_sub_base(url: str) -> str:
 
 
 def parse_sub_link(text: str) -> Tuple[str, str]:
-    """
-    لینک ساب را پارس می‌کند.
-    مثال: https://206.71.158.69:2096/sub/a09sdzfhq22n0lor
-    خروجی: (sub_base, sub_id)
-    """
+    """Parse subscription link → (sub_base, sub_id)."""
     raw = (text or "").strip()
     m = re.search(r"(https?://[^\s]+)", raw, re.I)
     url = (m.group(1) if m else raw).rstrip("/")
@@ -183,7 +179,7 @@ def parse_sub_link(text: str) -> Tuple[str, str]:
 
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) < 2:
-        raise ValueError("لینک ساب معتبر نیست.")
+        raise ValueError("invalid subscription link")
 
     sub_id = parts[-1].strip()
     if not sub_id:
@@ -195,24 +191,23 @@ def parse_sub_link(text: str) -> Tuple[str, str]:
 
 
 def _wrap_request_error(exc: Exception, *, verify_ssl: bool) -> RuntimeError:
-    """پیام خطای قابل‌فهم برای کاربر (به‌ویژه SSL)."""
+    """Wrap request errors (especially SSL) for logging."""
     msg = str(exc)
     if isinstance(exc, SSLError) or "CERTIFICATE_VERIFY_FAILED" in msg:
         hint = (
-            "گواهی SSL پنل معتبر نیست (منقضی یا خودامضا).\n"
-            "در .env بنویسید: VERIFY_SSL=false\n"
-            "یا در panels.json برای این پنل: \"verify_ssl\": false"
+            "Panel SSL certificate invalid (expired or self-signed). "
+            "Set VERIFY_SSL=false in .env or \"verify_ssl\": false in panels.json"
         )
         if verify_ssl:
             return RuntimeError(hint)
-        return RuntimeError(f"{hint}\n(جزئیات: {msg[:200]})")
-    return RuntimeError(f"خطای شبکه: {msg}")
+        return RuntimeError(f"{hint} ({msg[:200]})")
+    return RuntimeError(f"Network error: {msg}")
 
 
 class XuiPanel:
     def __init__(self, panel: PanelConfig, *, verify_ssl: bool = False, timeout: int = 15):
         self.panel = panel
-        # اولویت: verify_ssl هر پنل در json، وگرنه مقدار سراسری
+        # Per-panel verify_ssl in json overrides global setting
         if panel.verify_ssl is not None:
             self.verify_ssl = bool(panel.verify_ssl)
         else:
@@ -278,7 +273,7 @@ class XuiPanel:
             if r.status_code == 404:
                 continue
             if r.status_code == 403:
-                raise RuntimeError("ورود به پنل رد شد (403). نام کاربری/رمز یا CSRF را بررسی کنید.")
+                raise RuntimeError("Panel login denied (403). Check credentials or CSRF.")
             try:
                 data = r.json()
             except Exception:
@@ -286,9 +281,9 @@ class XuiPanel:
             if isinstance(data, dict) and data.get("success"):
                 return sess
             msg = data.get("msg") if isinstance(data, dict) else r.text[:200]
-            raise RuntimeError(f"ورود به پنل ناموفق: {msg or r.status_code}")
+            raise RuntimeError(f"Panel login failed: {msg or r.status_code}")
 
-        raise RuntimeError("endpoint ورود پنل پیدا نشد.")
+        raise RuntimeError("Panel login endpoint not found.")
 
     def _session_get(self) -> requests.Session:
         if self._session and time.time() < self._session_exp:
@@ -324,13 +319,13 @@ class XuiPanel:
             data = None
 
         if isinstance(data, dict) and data.get("success") is False:
-            raise RuntimeError(str(data.get("msg") or "درخواست API ناموفق بود"))
+            raise RuntimeError(str(data.get("msg") or "API request failed"))
 
         if not r.ok:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
 
         if not isinstance(data, dict):
-            raise RuntimeError("پاسخ JSON نامعتبر از پنل")
+            raise RuntimeError("Invalid JSON response from panel")
         return data
 
     def list_inbounds(self) -> List[dict]:
@@ -342,7 +337,7 @@ class XuiPanel:
         return dict(data.get("obj") or {})
 
     def build_config_links_from_api(self, sub_id: str) -> List[str]:
-        """ساخت لینک از دادهٔ API وقتی fetch مستقیم URL ساب جواب ندهد."""
+        """Build config links from API when direct sub URL fetch fails."""
         target = str(sub_id or "").strip()
         if not target:
             return []
@@ -499,7 +494,7 @@ def load_panels(path: str) -> Dict[str, PanelConfig]:
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
     if not isinstance(raw, dict):
-        raise ValueError("panels.json باید یک آبجکت JSON باشد.")
+        raise ValueError("panels.json must be a JSON object")
 
     panels: Dict[str, PanelConfig] = {}
     for key, cfg in raw.items():
@@ -509,7 +504,7 @@ def load_panels(path: str) -> Dict[str, PanelConfig]:
         username = str(cfg.get("username") or "").strip()
         password = str(cfg.get("password") or "").strip()
         if not api_url or not username or not password:
-            raise ValueError(f"پنل «{key}»: api_url، username و password الزامی است.")
+            raise ValueError(f"Panel '{key}': api_url, username and password are required")
         verify_ssl: Optional[bool] = None
         if "verify_ssl" in cfg:
             verify_ssl = bool(cfg["verify_ssl"])
@@ -541,7 +536,7 @@ def resolve_panel(panels: Dict[str, PanelConfig], sub_base: str) -> PanelConfig:
     if norm in panels:
         return panels[norm]
 
-    # تطبیق انعطاف‌پذیر: با/بدون /sub در انتها
+    # Flexible match with/without trailing /sub
     candidates = []
     for k, p in panels.items():
         if norm == k or norm.startswith(k + "/") or k.startswith(norm + "/"):

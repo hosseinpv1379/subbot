@@ -194,7 +194,10 @@ def main() -> None:
             f"Copy from example: cp panels.json.example panels.json"
         )
 
-    panels = load_panels(PANELS_FILE)
+    try:
+        panels = load_panels(PANELS_FILE)
+    except ValueError as exc:
+        raise SystemExit(f"panels.json error: {exc}") from exc
     log.info("Loaded %d panel(s) from %s", len(panels), PANELS_FILE)
     log.info("VERIFY_SSL=%s", VERIFY_SSL)
 

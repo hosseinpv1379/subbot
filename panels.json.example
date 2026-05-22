@@ -1,11 +1,21 @@
 {
-  "https://206.71.158.69:2096/sub": {
-    "name": "Sample server",
-    "api_url": "https://206.71.158.69:2053",
+  "https://out1.example.com/sub": {
+    "name": "server-1",
+    "api_url": "https://panel1.example.com:2053/secret-path",
     "username": "admin",
-    "password": "YOUR_PANEL_PASSWORD",
+    "password": "YOUR_PASSWORD",
     "verify_ssl": false,
-    "config_address": "your-domain.com",
+    "config_address": "1.2.3.4",
+    "config_port": 443,
+    "flag": "🇩🇪"
+  },
+  "http://sub2.example.com/sub": {
+    "name": "server-2",
+    "api_url": "https://panel2.example.com:2053/secret-path",
+    "username": "admin",
+    "password": "YOUR_PASSWORD",
+    "verify_ssl": false,
+    "config_address": "1.2.3.5",
     "config_port": 443,
     "flag": "🇩🇪"
   }

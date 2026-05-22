@@ -490,17 +490,32 @@ class XuiPanel:
         )
 
 
+def _normalize_api_url(url: str) -> str:
+    u = str(url or "").strip()
+    if not u:
+        return u
+    if not re.match(r"^https?://", u, re.I):
+        u = f"https://{u}"
+    return u.rstrip("/")
+
+
 def load_panels(path: str) -> Dict[str, PanelConfig]:
-    with open(path, encoding="utf-8") as f:
-        raw = json.load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"panels.json is invalid JSON (line {exc.lineno}, column {exc.colno}): {exc.msg}. "
+            "Use one object { } with multiple URL keys — not several separate { } blocks."
+        ) from exc
     if not isinstance(raw, dict):
-        raise ValueError("panels.json must be a JSON object")
+        raise ValueError("panels.json must be a single JSON object")
 
     panels: Dict[str, PanelConfig] = {}
     for key, cfg in raw.items():
         if not isinstance(cfg, dict):
             continue
-        api_url = str(cfg.get("api_url") or "").strip()
+        api_url = _normalize_api_url(cfg.get("api_url") or "")
         username = str(cfg.get("username") or "").strip()
         password = str(cfg.get("password") or "").strip()
         if not api_url or not username or not password:

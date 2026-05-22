@@ -5,16 +5,19 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import requests
 from requests.exceptions import SSLError
+
+import xui_link
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +42,9 @@ class PanelConfig:
     password: str
     sub_base: str
     verify_ssl: Optional[bool] = None  # None = از تنظیم سراسری .env
+    config_address: Optional[str] = None  # host عمومی لینک vless/vmess (اختیاری)
+    config_port: Optional[int] = None
+    flag: str = ""
 
 
 @dataclass
@@ -55,6 +61,89 @@ class SubscriptionInfo:
     pending_days: Optional[int]
     inbound_id: Optional[int]
     protocol: Optional[str]
+    config_links: List[str] = field(default_factory=list)
+
+
+def panel_to_dict(cfg: PanelConfig) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
+        "sub_base": cfg.sub_base,
+        "api_url": cfg.api_url,
+    }
+    if cfg.config_address:
+        d["config_address"] = cfg.config_address
+    if cfg.config_port:
+        d["config_port"] = cfg.config_port
+    if cfg.flag:
+        d["flag"] = cfg.flag
+    return d
+
+
+_CONFIG_PREFIXES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://")
+
+
+def _is_config_line(line: str) -> bool:
+    s = line.strip().lower()
+    return any(s.startswith(p) for p in _CONFIG_PREFIXES)
+
+
+def fetch_config_links_from_sub(
+    sub_url: str,
+    *,
+    verify_ssl: bool,
+    timeout: int = 15,
+) -> List[str]:
+    """لینک‌های vless/vmess/… را از همان URL سابی که کاربر می‌فرستد می‌خواند."""
+    headers = {
+        **_DEFAULT_HEADERS,
+        "Accept": "text/plain, application/json, */*",
+    }
+    try:
+        r = requests.get(
+            sub_url,
+            timeout=timeout,
+            verify=verify_ssl,
+            headers=headers,
+        )
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        log.debug("fetch sub url failed: %s", exc)
+        return []
+
+    raw = (r.text or "").strip()
+    if not raw:
+        return []
+
+    candidates: List[str] = []
+
+    # خروجی معمول 3x-ui: base64 شامل چند خط vless:// ...
+    try:
+        pad = "=" * (-len(raw) % 4)
+        decoded = base64.b64decode(raw + pad).decode("utf-8", errors="replace")
+        candidates.extend(decoded.splitlines())
+    except Exception:
+        candidates.append(raw)
+
+    # گاهی JSON آرایه‌ای از لینک‌هاست
+    if raw.startswith("{") or raw.startswith("["):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, str):
+                        candidates.append(item)
+        except json.JSONDecodeError:
+            pass
+
+    links: List[str] = []
+    seen: set[str] = set()
+    for line in candidates:
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if _is_config_line(s) and s not in seen:
+            seen.add(s)
+            links.append(s)
+    return links
 
 
 def _parse_settings(raw: Any) -> dict:
@@ -252,6 +341,61 @@ class XuiPanel:
         data = self._request("GET", f"/panel/api/inbounds/get/{int(inbound_id)}")
         return dict(data.get("obj") or {})
 
+    def build_config_links_from_api(self, sub_id: str) -> List[str]:
+        """ساخت لینک از دادهٔ API وقتی fetch مستقیم URL ساب جواب ندهد."""
+        target = str(sub_id or "").strip()
+        if not target:
+            return []
+
+        panel_d = panel_to_dict(self.panel)
+        host = xui_link.default_host_for(panel_d)
+        port_override = xui_link.default_port_for(panel_d)
+        flag = str(panel_d.get("flag") or "").strip()
+
+        links: List[str] = []
+        seen: set[str] = set()
+        for ib in self.list_inbounds():
+            try:
+                ibid = int(ib.get("id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ibid <= 0:
+                continue
+            try:
+                full = self.get_inbound(ibid)
+            except Exception as exc:
+                log.debug("build_config_links get_inbound %s: %s", ibid, exc)
+                continue
+            settings = _parse_settings(full.get("settings"))
+            for client in settings.get("clients") or []:
+                if not isinstance(client, dict):
+                    continue
+                if str(client.get("subId") or "").strip() != target:
+                    continue
+                try:
+                    link = xui_link.build_link(
+                        full,
+                        client,
+                        host,
+                        flag=flag,
+                        default_port=port_override,
+                    )
+                except Exception as exc:
+                    log.debug("build_link failed inbound %s: %s", ibid, exc)
+                    continue
+                if link and link not in seen:
+                    seen.add(link)
+                    links.append(link)
+        return links
+
+    def collect_config_links(self, sub_id: str, sub_url: str) -> List[str]:
+        links = fetch_config_links_from_sub(
+            sub_url, verify_ssl=self.verify_ssl, timeout=self.timeout,
+        )
+        if links:
+            return links
+        return self.build_config_links_from_api(sub_id)
+
     def find_client_by_sub_id(self, sub_id: str) -> Tuple[Optional[dict], Optional[int], Optional[dict]]:
         target = str(sub_id or "").strip()
         if not target:
@@ -332,6 +476,8 @@ class XuiPanel:
         if exp_ms < 0:
             pending_days = int(abs(exp_ms) // (86400 * 1000))
 
+        config_links = self.collect_config_links(sub_id, sub_url)
+
         return SubscriptionInfo(
             panel_name=self.panel.name,
             sub_id=sub_id,
@@ -345,6 +491,7 @@ class XuiPanel:
             pending_days=pending_days,
             inbound_id=ibid,
             protocol=str(inbound.get("protocol") or "") if inbound else None,
+            config_links=config_links,
         )
 
 
@@ -367,6 +514,14 @@ def load_panels(path: str) -> Dict[str, PanelConfig]:
         if "verify_ssl" in cfg:
             verify_ssl = bool(cfg["verify_ssl"])
 
+        config_address = str(cfg.get("config_address") or "").strip() or None
+        config_port: Optional[int] = None
+        if cfg.get("config_port") not in (None, "", 0):
+            try:
+                config_port = int(cfg["config_port"])
+            except (TypeError, ValueError):
+                config_port = None
+
         panels[normalize_sub_base(key)] = PanelConfig(
             name=str(cfg.get("name") or key),
             api_url=api_url,
@@ -374,6 +529,9 @@ def load_panels(path: str) -> Dict[str, PanelConfig]:
             password=password,
             sub_base=key.rstrip("/"),
             verify_ssl=verify_ssl,
+            config_address=config_address,
+            config_port=config_port,
+            flag=str(cfg.get("flag") or "").strip(),
         )
     return panels
 

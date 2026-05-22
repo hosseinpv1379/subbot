@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 from datetime import datetime, timezone
@@ -97,7 +98,40 @@ def format_subscription_message(info) -> str:
         f"⬇️ دانلود: {_fmt_bytes(info.down)}",
         f"📅 انقضا: {_fmt_expiry(info.expiry_ms, info.pending_days)}",
     ]
+
+    if info.sub_url:
+        lines.extend(["", "🔗 <b>لینک ساب</b>", f"<code>{html.escape(info.sub_url)}</code>"])
+
+    if info.config_links:
+        lines.append("")
+        lines.append("📡 <b>لینک‌های اتصال</b>")
+        for i, link in enumerate(info.config_links, 1):
+            proto = link.split("://", 1)[0].upper() if "://" in link else "CONFIG"
+            if len(info.config_links) > 1:
+                lines.append(f"\n<b>{i}. {proto}</b>")
+            lines.append(f"<code>{html.escape(link)}</code>")
+
     return "\n".join(lines)
+
+
+def _split_message(text: str, limit: int = 4000) -> list[str]:
+    """اگر پیام از حد تلگرام بلندتر شد، به چند قسمت تقسیم می‌کند."""
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    chunk: list[str] = []
+    size = 0
+    for line in text.split("\n"):
+        add = len(line) + 1
+        if chunk and size + add > limit:
+            parts.append("\n".join(chunk))
+            chunk = []
+            size = 0
+        chunk.append(line)
+        size += add
+    if chunk:
+        parts.append("\n".join(chunk))
+    return parts
 
 
 def user_facing_error(exc: Exception) -> str:
@@ -143,8 +177,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         sub_url = f"{panel_cfg.sub_base.rstrip('/')}/{sub_id}"
         client = get_panel_client(panel_cfg)
         info = client.get_subscription_info(sub_id, sub_url)
-        msg = format_subscription_message(info)
-        await wait.edit_text(msg, parse_mode="HTML")
+        parts = _split_message(format_subscription_message(info))
+        await wait.edit_text(parts[0], parse_mode="HTML")
+        for extra in parts[1:]:
+            await update.message.reply_text(extra, parse_mode="HTML")
     except (LookupError, ValueError) as exc:
         log.warning("subscription lookup: %s", exc)
         await wait.edit_text(f"❌ {user_facing_error(exc)}")

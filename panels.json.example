@@ -4,6 +4,9 @@
     "api_url": "https://206.71.158.69:2053",
     "username": "admin",
     "password": "YOUR_PANEL_PASSWORD",
-    "verify_ssl": false
+    "verify_ssl": false,
+    "config_address": "your-domain.com",
+    "config_port": 443,
+    "flag": "🇩🇪"
   }
 }

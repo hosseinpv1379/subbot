@@ -90,18 +90,15 @@ def parse_sub_link(text: str) -> Tuple[str, str]:
 
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
-        raise ValueError("لینک اشتراک معتبر نیست.")
+        raise ValueError("invalid subscription link")
 
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) < 2:
-        raise ValueError(
-            "مسیر لینک باید شبیه /sub/TOKEN باشد؛ "
-            "مثال: https://host:2096/sub/a09sdzfhq22n0lor"
-        )
+        raise ValueError("لینک ساب معتبر نیست.")
 
     sub_id = parts[-1].strip()
     if not sub_id:
-        raise ValueError("توکن اشتراک (subId) در لینک پیدا نشد.")
+        raise ValueError("invalid subscription link")
 
     base_path = "/" + "/".join(parts[:-1])
     sub_base = f"{parsed.scheme}://{parsed.netloc}{base_path}"
@@ -321,7 +318,7 @@ class XuiPanel:
     def get_subscription_info(self, sub_id: str, sub_url: str) -> SubscriptionInfo:
         inbound, ibid, client = self.find_client_by_sub_id(sub_id)
         if not client:
-            raise LookupError("کلاینتی با این لینک اشتراک روی پنل پیدا نشد.")
+            raise LookupError("subscription client not found")
 
         email = str(client.get("email") or "").strip()
         client_uuid = str(client.get("id") or client.get("password") or "").strip()
@@ -394,9 +391,6 @@ def resolve_panel(panels: Dict[str, PanelConfig], sub_base: str) -> PanelConfig:
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:
-        raise LookupError("چند پنل با این آدرس ساب تطبیق داد؛ کلید panels.json را دقیق‌تر کنید.")
+        raise LookupError("ambiguous panel mapping for sub base")
 
-    raise LookupError(
-        "پنلی برای این لینک اشتراک در panels.json ثبت نشده است.\n"
-        f"آدرس پایه: {sub_base}"
-    )
+    raise LookupError("no panel configured for this subscription link")

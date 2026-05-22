@@ -76,6 +76,7 @@ def _fmt_expiry(expiry_ms: int, pending_days: int | None) -> str:
 
 
 def format_subscription_message(info) -> str:
+    """فقط اطلاعات اشتراک برای مشتری — بدون نام پنل، توکن، ایمیل داخلی و …"""
     used = info.up + info.down
     limit = info.total_limit
     if limit > 0:
@@ -90,19 +91,22 @@ def format_subscription_message(info) -> str:
     lines = [
         "📋 <b>اطلاعات اشتراک</b>",
         "",
-        f"🖥 پنل: <b>{info.panel_name}</b>",
-        f"📧 ایمیل: <code>{info.email or '—'}</code>",
-        f"🔗 ساب: <code>{info.sub_id}</code>",
         f"⚡ وضعیت: {status}",
         traffic_line,
         f"⬆️ آپلود: {_fmt_bytes(info.up)}",
         f"⬇️ دانلود: {_fmt_bytes(info.down)}",
         f"📅 انقضا: {_fmt_expiry(info.expiry_ms, info.pending_days)}",
     ]
-    if info.inbound_id:
-        proto = f" ({info.protocol})" if info.protocol else ""
-        lines.append(f"📡 اینباند: #{info.inbound_id}{proto}")
     return "\n".join(lines)
+
+
+def user_facing_error(exc: Exception) -> str:
+    """پیام امن برای مشتری — بدون جزئیات پنل، فایل‌ها یا خطای فنی."""
+    if isinstance(exc, ValueError):
+        return "لینک ساب معتبر نیست."
+    if isinstance(exc, LookupError):
+        return "اشتراکی با این لینک پیدا نشد."
+    return "در حال حاضر امکان نمایش اطلاعات نیست. لطفاً بعداً دوباره تلاش کنید."
 
 
 def get_panel_client(panel_cfg: PanelConfig) -> XuiPanel:
@@ -112,19 +116,12 @@ def get_panel_client(panel_cfg: PanelConfig) -> XuiPanel:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "سلام 👋\n\n"
-        "لینک اشتراک (subscription) خود را بفرستید.\n\n"
-        "مثال:\n"
-        "<code>https://206.71.158.69:2096/sub/a09sdzfhq22n0lor</code>",
-        parse_mode="HTML",
+        "لینک ساب خودت رو بفرست تا اطلاعات اشتراکت رو ببینی.",
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "فقط لینک ساب را ارسال کنید.\n"
-        "ربات پنل را از فایل panels.json پیدا می‌کند و "
-        "اطلاعات را از API پنل 3x-ui می‌خواند.",
-    )
+    await update.message.reply_text("لینک ساب خودت رو بفرست.")
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -134,7 +131,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     panels: dict = context.application.bot_data.get("panels") or {}
     if not panels:
-        await update.message.reply_text("❌ فایل panels.json خالی است یا لود نشده.")
+        log.error("no panels loaded — cannot serve customer")
+        await update.message.reply_text("❌ در حال حاضر سرویس در دسترس نیست.")
         return
 
     wait = await update.message.reply_text("⏳ در حال بررسی اشتراک…")
@@ -147,13 +145,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         info = client.get_subscription_info(sub_id, sub_url)
         msg = format_subscription_message(info)
         await wait.edit_text(msg, parse_mode="HTML")
-    except LookupError as exc:
-        await wait.edit_text(f"❌ {exc}")
-    except ValueError as exc:
-        await wait.edit_text(f"❌ {exc}")
+    except (LookupError, ValueError) as exc:
+        log.warning("subscription lookup: %s", exc)
+        await wait.edit_text(f"❌ {user_facing_error(exc)}")
     except Exception as exc:
-        log.exception("subscription lookup failed")
-        await wait.edit_text(f"❌ خطا: {exc}")
+        log.exception("subscription lookup failed: %s", exc)
+        await wait.edit_text(f"❌ {user_facing_error(exc)}")
 
 
 def main() -> None:
